@@ -28,6 +28,9 @@ Shadowrocket 扫描此地址对应的 `sub://` 订阅二维码后，可更新整
 每个节点都必须通过 Cloudflare、Google、再次 Cloudflare 的 HTTPS 204 请求。TLS 节点启用证书校验；
 不能准确转换为受支持分享链接的特殊配置会被排除并记录。两个输出在同一次 Gist PATCH 中更新。
 如果网络故障、配置异常或没有节点通过，发布任务失败并保留上次成功订阅，不会用空列表覆盖。
+当完成检测但 0 个节点通过时，仍更新 `verified-status.json`：`status=unavailable`、
+`available_count=0`，并记录 `last_success_at` 和保留的旧节点数量。旧订阅此时只是恢复缓存，
+不能视作当前可用节点；恢复成功后状态重新变为 `ok`。
 检测来自 GitHub runner，不能代表手机或 Mac 的网络延迟；客户端仍需本地测速。
 
 Mac 使用 `verified-clash.yaml` 的 HTTP provider，每 30 分钟拉取；自动选择组每 5 分钟本地测速。

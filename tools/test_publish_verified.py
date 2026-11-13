@@ -1,9 +1,10 @@
 import base64
+import json
 import unittest
 import urllib.parse
 import yaml
 
-from publish_verified import make_files, prepare_proxy, share_uri
+from publish_verified import make_failure_files, make_files, prepare_proxy, share_uri
 
 
 class SubscriptionExportTests(unittest.TestCase):
@@ -40,6 +41,30 @@ class SubscriptionExportTests(unittest.TestCase):
         mobile_names = [urllib.parse.unquote(urllib.parse.urlsplit(uri).fragment) for uri in uris]
         self.assertEqual([p["name"] for p in clash], ["fast", "slow"])
         self.assertEqual(mobile_names, ["fast", "slow"])
+        status = json.loads(result["verified-status.json"]["content"])
+        self.assertEqual(status["status"], "ok")
+        self.assertTrue(status["feeds_updated"])
+        self.assertFalse(status["retained_previous_feeds"])
+
+    def test_failure_updates_status_without_replacing_client_feeds(self):
+        files = make_failure_files([], {"checked_at": "now"},
+                                   {"available_count": 14, "checked_at": "last-good"})
+        self.assertEqual(set(files), {"verified-status.json"})
+        status = json.loads(files["verified-status.json"]["content"])
+        self.assertEqual(status["available_count"], 0)
+        self.assertEqual(status["status"], "unavailable")
+        self.assertEqual(status["last_success_at"], "last-good")
+        self.assertEqual(status["retained_node_count"], 14)
+        self.assertFalse(status["feeds_updated"])
+
+    def test_repeated_failure_preserves_original_success_time_and_retained_count(self):
+        previous = {"status": "unavailable", "available_count": 0, "checked_at": "first-failure",
+                    "last_success_at": "last-good", "retained_node_count": 14}
+        files = make_failure_files([], {"checked_at": "next-failure"}, previous)
+        status = json.loads(files["verified-status.json"]["content"])
+        self.assertEqual(status["last_success_at"], "last-good")
+        self.assertEqual(status["retained_node_count"], 14)
+        self.assertTrue(status["retained_previous_feeds"])
 
     def test_zero_passes_cannot_produce_an_empty_replacement_subscription(self):
         with self.assertRaises(RuntimeError):

@@ -252,10 +252,24 @@ def make_files(proxies: list[dict], records: list[dict], metadata: dict) -> dict
     provider = yaml.safe_dump({"proxies": selected}, allow_unicode=True, sort_keys=False)
     mobile = b64("\n".join(links) + "\n") + "\n"
     assert len(yaml.safe_load(provider)["proxies"]) == len(base64.b64decode(mobile).decode().splitlines())
-    report = dict(metadata, available_count=len(selected), nodes=records)
+    report = dict(metadata, status="ok", available_count=len(selected), nodes=records,
+                  feeds_updated=True, retained_previous_feeds=False,
+                  last_success_at=metadata.get("checked_at"))
     return {"verified-clash.yaml": {"content": provider},
             "shadowrocket.txt": {"content": mobile},
             "verified-status.json": {"content": json.dumps(report, ensure_ascii=False, indent=2)}}
+
+
+def make_failure_files(records: list[dict], metadata: dict, previous: dict) -> dict:
+    """Report this failed check without replacing either client's cached feed."""
+    retained_count = previous.get("retained_node_count", previous.get("available_count"))
+    last_success = previous.get("last_success_at")
+    if not last_success and previous.get("available_count", 0) > 0:
+        last_success = previous.get("checked_at")
+    report = dict(metadata, status="unavailable", available_count=0, nodes=records,
+                  feeds_updated=False, retained_previous_feeds=bool(retained_count),
+                  retained_node_count=retained_count, last_success_at=last_success)
+    return {"verified-status.json": {"content": json.dumps(report, ensure_ascii=False, indent=2)}}
 
 
 def main():
@@ -295,7 +309,23 @@ def main():
                 "candidate_count": len(candidates), "tls_verification": True,
                 "vantage": "github-actions" if os.getenv("GITHUB_ACTIONS") == "true" else "local",
                 "compatibility_exclusions": rejected}
-    files = make_files(proxies, records, metadata)
+    count = sum(item["passed"] for item in records)
+    previous = {}
+    if count == 0 and args.publish:
+        parts = args.gist.split("/")
+        token = os.environ.get("GIST_PAT", "")
+        if len(parts) != 2 or not all(parts) or not token:
+            raise ValueError("publishing requires GIST_LINK and GIST_PAT")
+        gist = github_request("gists/" + parts[1], token)
+        previous_text = gist.get("files", {}).get("verified-status.json", {}).get("content", "{}")
+        try:
+            previous = json.loads(previous_text)
+        except (TypeError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+    files = (make_files(proxies, records, metadata) if count else
+             make_failure_files(records, metadata, previous))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for name, item in files.items():
         path = args.output_dir / name
@@ -309,14 +339,23 @@ def main():
         response = github_request("gists/" + parts[1], token, {"files": files})
         if not all(name in response.get("files", {}) for name in files):
             raise RuntimeError("GitHub did not confirm all output files")
-    count = sum(item["passed"] for item in records)
-    print(f'Verified {count}/{len(candidates)} nodes; matching Clash and Shadowrocket feeds ' +
-          ("published." if args.publish else "written locally."), flush=True)
+    if count:
+        print(f'Verified {count}/{len(candidates)} nodes; matching Clash and Shadowrocket feeds ' +
+              ("published." if args.publish else "written locally."), flush=True)
+    else:
+        print('No usable nodes. Current status updated to unavailable; previous client feeds retained.', flush=True)
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-            summary.write(f'Verified **{count}/{len(candidates)}** nodes with TLS certificate checking. '
-                          'Clash and Shadowrocket contain the same nodes. '
-                          'Measurements are from the GitHub runner; client-network latency differs.\n')
+            if count:
+                summary.write(f'Verified **{count}/{len(candidates)}** nodes with TLS certificate checking. '
+                              'Clash and Shadowrocket contain the same nodes. '
+                              'Measurements are from the GitHub runner; client-network latency differs.\n')
+            else:
+                summary.write(f'**0/{len(candidates)} nodes passed.** `verified-status.json` records '
+                              'this failure and the last successful check time. The client feeds '
+                              'were retained for recovery and are **not currently verified usable**.\n')
+    if count == 0:
+        raise RuntimeError("no nodes passed; unavailable status recorded; previous client feeds retained")
 
 
 if __name__ == "__main__":
